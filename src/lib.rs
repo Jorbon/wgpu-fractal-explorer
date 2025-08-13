@@ -7,7 +7,7 @@ use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-use winit::{application::ApplicationHandler, event::{KeyEvent, WindowEvent}, event_loop::{ActiveEventLoop, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::{Window, WindowId}};
+use winit::{application::ApplicationHandler, dpi::PhysicalSize, event::{KeyEvent, WindowEvent}, event_loop::{ActiveEventLoop, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::{Window, WindowId}};
 
 
 #[cfg(target_arch = "wasm32")]
@@ -26,6 +26,45 @@ pub mod canvas {
 }
 
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+
+impl Vertex {
+    const ATTRIBUTES: &[wgpu::VertexAttribute] = &[
+        wgpu::VertexAttribute {
+            offset: 0,
+            shader_location: 0,
+            format: wgpu::VertexFormat::Float32x3,
+        },
+        wgpu::VertexAttribute {
+            offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+            shader_location: 1,
+            format: wgpu::VertexFormat::Float32x3,
+        },
+    ];
+    
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: Self::ATTRIBUTES,
+        }
+    }
+}
+
+
+const VERTICES: &[Vertex] = &[
+    Vertex { position: [ 0.0,  0.5,  0.0], color: [1.0, 0.0, 0.0] },
+    Vertex { position: [-0.5, -0.5,  0.0], color: [0.0, 1.0, 0.0] },
+    Vertex { position: [ 0.5, -0.5,  0.0], color: [0.0, 0.0, 1.0] },
+];
+
+
+
 pub struct State {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -34,6 +73,8 @@ pub struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     is_surface_configured: bool,
+    render_pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
 }
 
 impl State {
@@ -77,6 +118,71 @@ impl State {
             desired_maximum_frame_latency: 2,
         };
         
+        
+        use wgpu::util::DeviceExt;
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex buffer"),
+            contents: bytemuck::cast_slice(VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into())
+        });
+        
+        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Render pipeline layout"),
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+        
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("render pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[
+                    Vertex::desc(),
+                ],
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[("test_constant", 0.9)],
+                    zero_initialize_workgroup_memory: false,
+                },
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[("test_constant", 0.9)],
+                    zero_initialize_workgroup_memory: false,
+                },
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        });
+        
         Ok(Self {
             window,
             surface,
@@ -85,25 +191,18 @@ impl State {
             queue,
             config,
             is_surface_configured: false,
+            render_pipeline,
+            vertex_buffer,
         })
     }
     
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if width > 0 && height > 0 {
-            self.config.width = width.clamp(1, self.limits.max_texture_dimension_2d);
-            self.config.height = height.clamp(1, self.limits.max_texture_dimension_2d);
-            
-            #[cfg(target_arch = "wasm32")] let canvas = canvas::get_canvas();
-            #[cfg(target_arch = "wasm32")] let previous_width = canvas.width();
-            #[cfg(target_arch = "wasm32")] let previous_height = canvas.height();
-            
-            self.surface.configure(&self.device, &self.config);
-            
-            #[cfg(target_arch = "wasm32")] canvas.set_width(previous_width);
-            #[cfg(target_arch = "wasm32")] canvas.set_height(previous_height);
-            
-            self.is_surface_configured = true;
-        }
+    pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        if new_size.width == 0 || new_size.height == 0 { return }
+        self.config.width = new_size.width.min(self.limits.max_texture_dimension_2d);
+        self.config.height = new_size.height.min(self.limits.max_texture_dimension_2d);
+        // Make sure canvas width and height are set in CSS or this call will take control and crash the app in a very silly way!
+        self.surface.configure(&self.device, &self.config);
+        self.is_surface_configured = true;
     }
     
     pub fn update(&mut self) {
@@ -120,26 +219,32 @@ impl State {
             label: Some("Render Encoder"),
         });
         
-        let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.1,
-                        g: 0.2,
-                        b: 0.3,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.1,
+                            g: 0.2,
+                            b: 0.3,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
             depth_stencil_attachment: None,
             occlusion_query_set: None,
             timestamp_writes: None,
         });
+        
+        render_pass.set_pipeline(&self.render_pipeline);
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.draw(0..(VERTICES.len() as u32), 0..1);
         
         drop(render_pass);
         
@@ -194,10 +299,7 @@ impl ApplicationHandler<State> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, mut event: State) {
         #[cfg(target_arch = "wasm32")] {
             event.window.request_redraw();
-            event.resize(
-                event.window.inner_size().width,
-                event.window.inner_size().height,
-            );
+            event.resize(event.window.inner_size());
         }
         
         self.state = Some(event);
@@ -208,18 +310,13 @@ impl ApplicationHandler<State> for App {
         
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => {
-                state.resize(size.width, size.height);
-            },
-            WindowEvent::RedrawRequested => {
-                match state.render() {
-                    Ok(_) => (),
-                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                        let size = state.window.inner_size();
-                        state.resize(size.width, size.height);
-                    }
-                    Err(e) => log::error!("Render broke uh oh: {e}")
+            WindowEvent::Resized(size) => state.resize(size),
+            WindowEvent::RedrawRequested => match state.render() {
+                Ok(_) => (),
+                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                    state.resize(state.window.inner_size());
                 }
+                Err(e) => log::error!("Render broke uh oh: {e}")
             }
             WindowEvent::KeyboardInput {
                 event: KeyEvent { physical_key: PhysicalKey::Code(code), state, .. }, ..
