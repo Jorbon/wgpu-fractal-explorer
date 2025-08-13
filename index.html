@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<head>
+    <meta charset="UTF8">
+    <title>WGPU Fractal Explorer</title>
+    <style>
+        canvas {
+            background-color: black;
+        }
+    </style>
+</head>
+<body>
+    <script type="module">
+        import run_web from "./pkg/wgpu_fractal_explorer.js"
+        run_web().then(() => {
+            console.log("WASM loaded");
+        });
+    </script>
+    <canvas id="canvas"></canvas>
+</body>

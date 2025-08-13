@@ -1,0 +1,28 @@
+[package]
+name = "wgpu-fractal-explorer"
+version = "0.1.0"
+authors = ["Ben Phillips <ben.a.phillips@outlook.com>"]
+description = "I am learning WGPU and web assembly by re-making my mandelbrot and julia fractal explorer."
+repository = "https://github.com/Jorbon/wgpu-fractal_explorer"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[profile.release]
+strip = true
+
+[dependencies]
+winit = "0.30.12"
+env_logger = "0.11.8"
+log = "0.4.27"
+wgpu = "26.0.1"
+pollster = "0.4.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.7"
+console_log = "1.0.0"
+wgpu = { version = "26.0.1", features = ["webgl"] }
+wasm-bindgen = "0.2.100"
+wasm-bindgen-futures = "0.4.50"
+web-sys = { version = "0.3.77", features = ["Document", "Window", "Element"] }
