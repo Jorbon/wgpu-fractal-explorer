@@ -1,0 +1,11 @@
+[package]
+name = "wasm-wrapper"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wgpu-fractal-explorer = { path = ".." }

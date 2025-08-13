@@ -63,6 +63,15 @@
                 "kind": "build",
                 "isDefault": true
             }
+        },
+        {
+            "type": "shell",
+            "command": "wasm-pack build ./wasm-wrapper --target web",
+            "label": "build wasm",
+            "group": {
+                "kind": "build",
+                "isDefault": false,
+            }
         }
     ]
 }

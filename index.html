@@ -1,19 +1,30 @@
 <!DOCTYPE html>
+<html lang="en">
 <head>
     <meta charset="UTF8">
     <title>WGPU Fractal Explorer</title>
     <style>
+        body {
+            padding: 0;
+        }
+        
         canvas {
             background-color: black;
+            width: 80vw;
+            height: 80vh;
+            margin-left: 10vw;
+            margin-top: 10vh;
+            outline: none;
         }
     </style>
 </head>
 <body>
     <script type="module">
-        import run_web from "./pkg/wgpu_fractal_explorer.js"
+        import run_web from "./wasm-wrapper/pkg/wasm_wrapper.js"
         run_web().then(() => {
             console.log("WASM loaded");
         });
     </script>
     <canvas id="canvas"></canvas>
 </body>
+</html>

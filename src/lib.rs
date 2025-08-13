@@ -6,28 +6,147 @@ use std::sync::Arc;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
+
 use winit::{application::ApplicationHandler, event::{KeyEvent, WindowEvent}, event_loop::{ActiveEventLoop, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::{Window, WindowId}};
+
+
+#[cfg(target_arch = "wasm32")]
+pub mod canvas {
+    use wasm_bindgen::UnwrapThrowExt;
+    use wasm_bindgen::JsCast;
+    
+    const CANVAS_ID: &str = "canvas";
+
+    pub fn get_canvas() -> web_sys::HtmlCanvasElement {
+        let window = web_sys::window().expect_throw("No window!");
+        let document = window.document().expect_throw("No document!");
+        let canvas = document.get_element_by_id(CANVAS_ID).expect_throw("No canvas!");
+        canvas.unchecked_into()
+    }
+}
 
 
 pub struct State {
     window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    limits: wgpu::Limits,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    is_surface_configured: bool,
 }
 
 impl State {
     pub async fn new(window: Arc<Window>) -> Result<Self> {
+        let size = window.inner_size();
+        
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            #[cfg(not(target_arch = "wasm32"))] backends: wgpu::Backends::PRIMARY,
+            #[cfg(    target_arch = "wasm32" )] backends: wgpu::Backends::GL,
+            ..Default::default()
+        });
+        
+        let surface = instance.create_surface(window.clone()).unwrap();
+        
+        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        }).await?;
+        
+        let limits = adapter.limits();
+        
+        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: wgpu::Features::empty(),
+            required_limits: limits.clone(),
+            memory_hints: Default::default(),
+            trace: wgpu::Trace::Off,
+        }).await?;
+        
+        let surface_caps = surface.get_capabilities(&adapter);
+        let surface_format = surface_caps.formats.iter().find(|f| f.is_srgb()).copied().unwrap_or(surface_caps.formats[0]);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width,
+            height: size.height,
+            present_mode: surface_caps.present_modes[0],
+            alpha_mode: surface_caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        
         Ok(Self {
             window,
+            surface,
+            limits,
+            device,
+            queue,
+            config,
+            is_surface_configured: false,
         })
     }
     
     pub fn resize(&mut self, width: u32, height: u32) {
-        
+        if width > 0 && height > 0 {
+            self.config.width = width.clamp(1, self.limits.max_texture_dimension_2d);
+            self.config.height = height.clamp(1, self.limits.max_texture_dimension_2d);
+            
+            #[cfg(target_arch = "wasm32")] let canvas = canvas::get_canvas();
+            #[cfg(target_arch = "wasm32")] let previous_width = canvas.width();
+            #[cfg(target_arch = "wasm32")] let previous_height = canvas.height();
+            
+            self.surface.configure(&self.device, &self.config);
+            
+            #[cfg(target_arch = "wasm32")] canvas.set_width(previous_width);
+            #[cfg(target_arch = "wasm32")] canvas.set_height(previous_height);
+            
+            self.is_surface_configured = true;
+        }
     }
     
-    pub fn render(&mut self) {
+    pub fn update(&mut self) {
+        todo!()
+    }
+    
+    pub fn render(&mut self) -> std::result::Result<(), wgpu::SurfaceError> {
         self.window.request_redraw();
+        if !self.is_surface_configured { return Ok(()) }
         
+        let output = self.surface.get_current_texture()?;
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Render Encoder"),
+        });
         
+        let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.1,
+                        g: 0.2,
+                        b: 0.3,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+        
+        drop(render_pass);
+        
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+        
+        Ok(())
     }
 }
 
@@ -53,35 +172,8 @@ impl ApplicationHandler<State> for App {
         let mut window_attributes = Window::default_attributes();
         
         #[cfg(target_arch = "wasm32")] {
-            use wasm_bindgen::JsCast;
             use winit::platform::web::WindowAttributesExtWebSys;
-            
-            const CANVAS_ID: &str = "canvas";
-            
-            let window = match wgpu::web_sys::window() {
-                Some(window) => window,
-                None => {
-                    log::error!("No window!");
-                    return
-                }
-            };
-            let document = match window.document() {
-                Some(document) => document,
-                None => {
-                    log::error!("No document!");
-                    web_sys::console::error_1(&"No document!".into());
-                    return
-                }
-            };
-            let canvas = match document.get_element_by_id(CANVAS_ID) {
-                Some(canvas) => canvas,
-                None => {
-                    log::error!("No canvas!");
-                    return
-                }
-            };
-            let html_canvas_element = canvas.unchecked_into();
-            window_attributes = window_attributes.with_canvas(Some(html_canvas_element));
+            window_attributes = window_attributes.with_canvas(Some(canvas::get_canvas()));
         }
         
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
@@ -116,9 +208,18 @@ impl ApplicationHandler<State> for App {
         
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => state.resize(size.width, size.height),
+            WindowEvent::Resized(size) => {
+                state.resize(size.width, size.height);
+            },
             WindowEvent::RedrawRequested => {
-                state.render();
+                match state.render() {
+                    Ok(_) => (),
+                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                        let size = state.window.inner_size();
+                        state.resize(size.width, size.height);
+                    }
+                    Err(e) => log::error!("Render broke uh oh: {e}")
+                }
             }
             WindowEvent::KeyboardInput {
                 event: KeyEvent { physical_key: PhysicalKey::Code(code), state, .. }, ..

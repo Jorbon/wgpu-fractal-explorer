@@ -7,7 +7,11 @@ repository = "https://github.com/Jorbon/wgpu-fractal_explorer"
 edition = "2024"
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
+
+[workspace]
+members = [".", "wasm-wrapper"]
+default-members = ["."]
 
 [profile.release]
 strip = true
