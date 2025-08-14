@@ -1,13 +1,15 @@
 #![allow(dead_code)]
 
 mod common; #[allow(unused_imports)] pub use common::*;
+mod math; #[allow(unused_imports)] pub use math::*;
+mod teapot; #[allow(unused_imports)] pub use teapot::*;
 
 use std::sync::Arc;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-use winit::{application::ApplicationHandler, dpi::PhysicalSize, event::{KeyEvent, WindowEvent}, event_loop::{ActiveEventLoop, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::{Window, WindowId}};
+use winit::{application::ApplicationHandler, dpi::{PhysicalPosition, PhysicalSize}, event::{KeyEvent, WindowEvent}, event_loop::{ActiveEventLoop, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::{Window, WindowId}};
 
 
 #[cfg(target_arch = "wasm32")]
@@ -56,12 +58,30 @@ impl Vertex {
     }
 }
 
+type Index = u32;
+
 
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [ 0.0,  0.5,  0.0], color: [1.0, 0.0, 0.0] },
-    Vertex { position: [-0.5, -0.5,  0.0], color: [0.0, 1.0, 0.0] },
-    Vertex { position: [ 0.5, -0.5,  0.0], color: [0.0, 0.0, 1.0] },
+    Vertex { position: [-0.1,  0.5,  0.0], color: [1.0, 0.0, 0.0] },
+    Vertex { position: [-0.5,  0.0,  0.0], color: [0.0, 1.0, 0.0] },
+    Vertex { position: [-0.3, -0.5,  0.0], color: [0.0, 0.0, 1.0] },
+    Vertex { position: [ 0.4, -0.4,  0.0], color: [1.0, 0.5, 0.0] },
+    Vertex { position: [ 0.5,  0.2,  0.0], color: [0.5, 0.0, 1.0] },
 ];
+
+const INDICES: &[Index] = &[0, 1, 2, 0, 2, 3, 0, 3, 4];
+
+
+
+
+
+struct Camera {
+    position: Vec3<f32>,
+    yaw: f32,
+    pitch: f32,
+    roll: f32,
+    
+}
 
 
 
@@ -75,6 +95,12 @@ pub struct State {
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+    camera: Camera,
+    mouse_position: PhysicalPosition<f64>,
 }
 
 impl State {
@@ -97,10 +123,15 @@ impl State {
         
         let limits = adapter.limits();
         
+        #[cfg(not(target_arch = "wasm32"))]
+        let required_limits = wgpu::Limits::default();
+        #[cfg(target_arch = "wasm32")]
+        let required_limits = wgpu::Limits::downlevel_webgl2_defaults();
+        
         let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
             label: None,
             required_features: wgpu::Features::empty(),
-            required_limits: limits.clone(),
+            required_limits,
             memory_hints: Default::default(),
             trace: wgpu::Trace::Off,
         }).await?;
@@ -119,11 +150,138 @@ impl State {
         };
         
         
+        let image_bytes = include_bytes!("../assets/test.png");
+        let image = image::load_from_memory(image_bytes).unwrap().to_rgba8();
+        // use image::GenericImageView;
+        let (image_width, image_height) = image.dimensions();
+        
+        let texture_size = wgpu::Extent3d {
+            width: image_width,
+            height: image_height,
+            depth_or_array_layers: 1,
+        };
+        
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            label: Some("texture"),
+            view_formats: &[],
+        });
+        
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &image,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * image_width),
+                rows_per_image: Some(image_height),
+            },
+            texture_size,
+        );
+        
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        
+        
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Uniforms"),
+            contents: bytemuck::cast_slice(&[0.0f32, 0.0, 0.0, 0.0]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        
+        let uniform_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("uniform bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        
+        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("uniform bind group"),
+            layout: &uniform_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        
+        
         use wgpu::util::DeviceExt;
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex buffer"),
-            contents: bytemuck::cast_slice(VERTICES),
+            contents: bytemuck::cast_slice(teapot::VERTICES),
             usage: wgpu::BufferUsages::VERTEX,
+        });
+        
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index buffer"),
+            contents: bytemuck::cast_slice(teapot::INDICES),
+            usage: wgpu::BufferUsages::INDEX,
         });
         
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -133,7 +291,10 @@ impl State {
         
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render pipeline layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[
+                &bind_group_layout,
+                &uniform_bind_group_layout,
+            ],
             push_constant_ranges: &[],
         });
         
@@ -183,6 +344,7 @@ impl State {
             cache: None,
         });
         
+        
         Ok(Self {
             window,
             surface,
@@ -193,6 +355,12 @@ impl State {
             is_surface_configured: false,
             render_pipeline,
             vertex_buffer,
+            index_buffer,
+            bind_group,
+            uniform_buffer,
+            uniform_bind_group,
+            camera: Camera { position: Vec3(0.0, 0.0, 0.0), yaw: 0.0, pitch: 0.0, roll: 0.0 },
+            mouse_position: PhysicalPosition { x: 0.0, y: 0.0 },
         })
     }
     
@@ -243,8 +411,11 @@ impl State {
         });
         
         render_pass.set_pipeline(&self.render_pipeline);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.draw(0..(VERTICES.len() as u32), 0..1);
+        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        render_pass.draw_indexed(0..(teapot::INDICES.len() as u32 * 3), 0, 0..1);
         
         drop(render_pass);
         
@@ -311,6 +482,7 @@ impl ApplicationHandler<State> for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => state.resize(size),
+            
             WindowEvent::RedrawRequested => match state.render() {
                 Ok(_) => (),
                 Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -318,12 +490,19 @@ impl ApplicationHandler<State> for App {
                 }
                 Err(e) => log::error!("Render broke uh oh: {e}")
             }
+            
             WindowEvent::KeyboardInput {
                 event: KeyEvent { physical_key: PhysicalKey::Code(code), state, .. }, ..
             } => match (code, state.is_pressed()) {
                 (KeyCode::Escape, true) => event_loop.exit(),
                 _ => ()
             }
+            
+            WindowEvent::CursorMoved { position, device_id: _ } => {
+                state.mouse_position = position;
+                state.queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[state.mouse_position.x as f32 / state.config.width as f32, state.mouse_position.y as f32 / state.config.height as f32]));
+            }
+            
             _ => ()
         }
     }
