@@ -17,18 +17,19 @@ default-members = ["."]
 strip = true
 
 [dependencies]
-winit = "0.30.12"
-env_logger = "0.11.8"
-log = "0.4.27"
-wgpu = "26.0.1"
-pollster = "0.4.0"
-bytemuck = { version = "1.23.2", features = ["derive"] }
-image = { version = "0.25.6", default-features = false, features = ["png"] }
+winit = "*"
+glyphon = "*"
+env_logger = "*"
+log = "*"
+wgpu = "*"
+pollster = "*"
+bytemuck = { version = "*", features = ["derive"] }
+image = { version = "*", default-features = false, features = ["png"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-console_error_panic_hook = "0.1.7"
-console_log = "1.0.0"
-wgpu = { version = "26.0.1", features = ["webgl"] }
-wasm-bindgen = "0.2.100"
-wasm-bindgen-futures = "0.4.50"
-web-sys = { version = "0.3.77", features = ["Document", "Window", "Element"] }
+console_error_panic_hook = "*"
+console_log = "*"
+wgpu = { version = "*", features = ["webgl"] }
+wasm-bindgen = "*"
+wasm-bindgen-futures = "*"
+web-sys = { version = "*", features = ["Document", "Window", "Element"] }

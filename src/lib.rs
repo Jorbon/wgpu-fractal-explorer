@@ -6,10 +6,11 @@ mod teapot; #[allow(unused_imports)] pub use teapot::*;
 
 use std::sync::Arc;
 
+use winit::{application::ApplicationHandler, dpi::{PhysicalPosition, PhysicalSize}, event::{KeyEvent, WindowEvent}, event_loop::{ActiveEventLoop, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::{Window, WindowId}};
+
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-use winit::{application::ApplicationHandler, dpi::{PhysicalPosition, PhysicalSize}, event::{KeyEvent, WindowEvent}, event_loop::{ActiveEventLoop, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::{Window, WindowId}};
 
 
 #[cfg(target_arch = "wasm32")]
@@ -94,6 +95,14 @@ pub struct State {
     config: wgpu::SurfaceConfiguration,
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
+    
+    font_system: glyphon::FontSystem,
+    swash_cache: glyphon::SwashCache,
+    viewport: glyphon::Viewport,
+    atlas: glyphon::TextAtlas,
+    text_renderer: glyphon::TextRenderer,
+    text_buffer: glyphon::Buffer,
+    
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -101,6 +110,9 @@ pub struct State {
     uniform_bind_group: wgpu::BindGroup,
     camera: Camera,
     mouse_position: PhysicalPosition<f64>,
+    
+    average_frame_dt: f32,
+    previous_frame_time: std::time::Instant,
 }
 
 impl State {
@@ -152,7 +164,6 @@ impl State {
         
         let image_bytes = include_bytes!("../assets/test.png");
         let image = image::load_from_memory(image_bytes).unwrap().to_rgba8();
-        // use image::GenericImageView;
         let (image_width, image_height) = image.dimensions();
         
         let texture_size = wgpu::Extent3d {
@@ -345,6 +356,18 @@ impl State {
         });
         
         
+        let mut font_system = glyphon::FontSystem::new();
+        let swash_cache = glyphon::SwashCache::new();
+        let cache = glyphon::Cache::new(&device);
+        let viewport = glyphon::Viewport::new(&device, &cache);
+        let mut atlas = glyphon::TextAtlas::new(&device, &queue, &cache, surface_format);
+        let text_renderer = glyphon::TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
+        let mut text_buffer = glyphon::Buffer::new(&mut font_system, glyphon::Metrics { font_size: 16.0, line_height: 16.0 });
+        text_buffer.set_size(&mut font_system, Some(300.0), Some(100.0));
+        text_buffer.set_text(&mut font_system, "Text text!", &glyphon::Attrs::new().color(glyphon::Color::rgb(255, 255, 255)), glyphon::Shaping::Basic);
+        text_buffer.shape_until_scroll(&mut font_system, false);
+        
+        
         Ok(Self {
             window,
             surface,
@@ -354,6 +377,14 @@ impl State {
             config,
             is_surface_configured: false,
             render_pipeline,
+            
+            font_system,
+            swash_cache,
+            viewport,
+            atlas,
+            text_renderer,
+            text_buffer,
+            
             vertex_buffer,
             index_buffer,
             bind_group,
@@ -361,6 +392,9 @@ impl State {
             uniform_bind_group,
             camera: Camera { position: Vec3(0.0, 0.0, 0.0), yaw: 0.0, pitch: 0.0, roll: 0.0 },
             mouse_position: PhysicalPosition { x: 0.0, y: 0.0 },
+            
+            average_frame_dt: 0.0,
+            previous_frame_time: std::time::Instant::now(),
         })
     }
     
@@ -371,6 +405,8 @@ impl State {
         // Make sure canvas width and height are set in CSS or this call will take control and crash the app in a very silly way!
         self.surface.configure(&self.device, &self.config);
         self.is_surface_configured = true;
+        
+        self.viewport.update(&self.queue, glyphon::Resolution { width: self.config.width, height: self.config.height });
     }
     
     pub fn update(&mut self) {
@@ -380,6 +416,25 @@ impl State {
     pub fn render(&mut self) -> std::result::Result<(), wgpu::SurfaceError> {
         self.window.request_redraw();
         if !self.is_surface_configured { return Ok(()) }
+        
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.previous_frame_time).as_secs_f32();
+        self.previous_frame_time = now;
+        self.average_frame_dt = 0.99 * self.average_frame_dt + 0.01 * dt;
+        
+        self.text_buffer.set_text(&mut self.font_system, &format!("Fps: {}", 1.0 / self.average_frame_dt), &glyphon::Attrs::new().color(glyphon::Color::rgb(255, 255, 255)), glyphon::Shaping::Basic);
+        
+        
+        self.text_renderer.prepare(&self.device, &self.queue, &mut self.font_system, &mut self.atlas, &self.viewport, [glyphon::TextArea {
+            buffer: &self.text_buffer,
+            left: 10.0,
+            top: 10.0,
+            scale: self.window.scale_factor() as f32,
+            bounds: glyphon::TextBounds { left: 10, top: 10, right: self.config.width as i32 - 10, bottom: self.config.height as i32 - 10, },
+            default_color: glyphon::Color::rgb(255, 255, 255),
+            custom_glyphs: &[],
+        }], &mut self.swash_cache).unwrap();
+        
         
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -393,7 +448,6 @@ impl State {
                 Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
-                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.1,
@@ -417,10 +471,14 @@ impl State {
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..(teapot::INDICES.len() as u32 * 3), 0, 0..1);
         
+        self.text_renderer.render(&self.atlas, &self.viewport, &mut render_pass).unwrap();
+        
         drop(render_pass);
         
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+        
+        self.atlas.trim();
         
         Ok(())
     }
